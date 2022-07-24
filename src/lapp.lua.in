@@ -105,7 +105,7 @@ arguments_table.string =
         option.string = argument;
         return true;
       else
-        return false, 'Option ' .. option_name .. ' takes an argument';
+        return false, ([[Option %s takes an argument]]):format (option.short or option.long)
       end
     end,
     pending = function(app, option, list) end,
@@ -127,7 +127,7 @@ arguments_table.file =
         option.filename = argument;
         return true;
       else
-        return false, 'Option ' .. option_name .. ' takes an argument';
+        return false, ([[Option %s takes an argument]]):format (option.short or option.long)
       end
     end,
     pending = function(app, option, list)
@@ -163,7 +163,7 @@ arguments_table['file-create'] =
         option.filename = argument;
         return true;
       else
-        return false, 'Option ' .. option_name .. ' takes an argument';
+        return false, ([[Option %s takes an argument]]):format (option.short or option.long)
       end
     end,
     pending = function(app, option, list)
@@ -288,7 +288,7 @@ function lapp.add_arguments(app, arguments)
   local add_argument = lapp.add_argument;
   for _, argument in ipairs(arguments) do
     assert(type(argument) == 'table');
-    local success = add_argument(app, table.unpack(option));
+    local success = add_argument(app, table.unpack(arguments));
     if(not success) then
       return success;
     end
@@ -376,7 +376,7 @@ end
 function lapp.run(app, ...)
   local files = {};
   local next_, cmd, key, option_name = ipairs({...});
-  app.arg_0 = (args and args[0]) or (arg and arg[0]) or cmd[0];
+  app.arg_0 = (args or arg or cmd or {[0]='(null)'})[0];
 
   local pending_calls = {};
   local noparse = false;
