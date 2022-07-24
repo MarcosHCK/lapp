@@ -15,6 +15,7 @@
 --  You should have received a copy of the GNU General Public License
 --  along with libLApp.  If not, see <http://www.gnu.org/licenses/>.
 ]]
+
 local lapp = {};
 lapp.version = "libLApp @PACKAGE_VERSION@";
 
@@ -51,6 +52,10 @@ do
         return value .. string.rep(' ', spaces - value:len());
       end,
     };
+  end
+
+  if(table.unpack == nil) then
+    table.unpack = unpack;
   end
 end
 
@@ -236,6 +241,8 @@ end
 local function check_arg(option, option_name, arg)
   if(type(arg) ~= 'string') then
     return false, 'Option ' .. option_name .. ' takes an argument';
+  elseif(option.type == 'string') then
+    option.arg = arg;
   elseif(option.type == 'file') then
     if(not require('filesystem').exists(arg)) then
       return false, 'File ' .. arg .. ' doesn\'t exists';
@@ -264,16 +271,31 @@ function lapp.run(app, ...)
       if(option_name:match('^%-%-?.')) then
 
         local function parse_option(option_name)
-          local option = search_option(app.options, option_name);
+          local option_name_ = option_name:match('([^%=]*)');
+          local option_arg_ = option_name:match('%=(.*)');
+          local option = search_option(app.options, option_name_);
           if(option) then
-            local arg = true;
+            local arg;
             option.arg = nil;
 
             if(option.type ~= 'none') then
-              key, arg = next_(cmd, key);
-              local success, reason = check_arg(option, option_name, arg);
-              if(not success) then
-                return success, reason;
+              if(option_arg_ ~= nil) then
+                local success, reason = check_arg(option, option_name_, option_arg_);
+                if(not success) then
+                  return success, reason;
+                end
+              else
+                key, arg = next_(cmd, key);
+                local success, reason = check_arg(option, option_name_, arg);
+                if(not success) then
+                  return success, reason;
+                end
+              end
+            else
+              if(option_arg_ ~= nil) then
+                return false, 'Option \'' .. option_name_ .. '\' doesn\'t take any arguments';
+              else
+                option.arg = true;
               end
             end
 
@@ -284,12 +306,8 @@ function lapp.run(app, ...)
                 [2] = args,
               });
             end
-
-            if(option.arg == nil) then
-              option.arg = arg;
-            end
           else
-            return false, 'Unhandled option: ' .. option_name;
+            return false, 'Unhandled option: ' .. option_name_;
           end
         return true;
         end
@@ -359,7 +377,7 @@ function lapp.assertopt(app, option_name_)
                   app.name,
                   option_name_,
                   app.name
-                  ));
+                  ), 1);
   end
 return value;
 end
@@ -371,7 +389,7 @@ function lapp.assertarg(app, arg)
                   'Try \'%s --help\' for more information\r\n',
                   app.name,
                   app.name
-                  ));
+                  ), 1);
   end
 return arg;
 end
@@ -381,7 +399,7 @@ function lapp.assert(app, condition, message)
   if(condition ~= true) then
     error(
       string.format('%s: fatal error: %s',
-        app.name, tostring(message)));
+        app.name, tostring(message)), 2);
   end
 end
 
