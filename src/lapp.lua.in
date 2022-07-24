@@ -186,26 +186,46 @@ function lapp.run(app, ...)
     key, option_name = next_(cmd, key);
     if(type(option_name) == 'string') then
       if(option_name:match('^%-%-?.')) then
-        local option = search_option(app.options, option_name);
-        if(option) then
-          local arg = true;
-          if(option.type ~= 'none') then
-            key, arg = next_(cmd, key);
-            local success, reason = check_arg(option, option_name, arg);
-            if(not success) then
-              return success, reason;
+
+        local function parse_option(option_name)
+          local option = search_option(app.options, option_name);
+          if(option) then
+            local arg = true;
+            if(option.type ~= 'none') then
+              key, arg = next_(cmd, key);
+              local success, reason = check_arg(option, option_name, arg);
+              if(not success) then
+                return success, reason;
+              end
+            end
+            if(option.callback) then
+              table.insert(pending_calls, {
+                func = option.callback,
+                [1] = app,
+                [2] = args,
+              });
+            end
+            option.arg = arg;
+          else
+            return false, 'Unhandled option: ' .. option_name;
+          end
+        return true;
+        end
+
+        local islong = (option_name:sub(2, 2) == '-');
+        if(islong) then
+          local ret, reason = parse_option(option_name);
+          if(ret ~= true) then
+            return ret, reason;
+          end
+        else
+          for i = 2, option_name:len(), 1 do
+            local bit = option_name:sub(i, i);
+            local ret, reason = parse_option('-' .. bit);
+            if(ret ~= true) then
+              return ret, reason;
             end
           end
-          if(option.callback) then
-            table.insert(pending_calls, {
-              func = option.callback,
-              [1] = app,
-              [2] = args,
-            });
-          end
-          option.arg = arg;
-        else
-          return false, 'Unhandled option: ' .. option_name;
         end
       else
         table.insert(files, option_name);
@@ -232,11 +252,18 @@ function lapp.run_s(app, ...)
 end
 
 function lapp.getopt(app, option_name_)
-  local option_names = {'-' .. option_name_, '--' .. option_name_};
-  for _, option_name in ipairs(option_names) do
-    local option = search_option(app.options, option_name);
+  if(option_name_:match('^%-%-?.')) then
+    local option = search_option(app.options, option_name_);
     if(option) then
       return option.arg;
+    end
+  else
+    local option_names = {'-' .. option_name_, '--' .. option_name_};
+    for _, option_name in ipairs(option_names) do
+      local option = search_option(app.options, option_name);
+      if(option) then
+        return option.arg;
+      end
     end
   end
 end
