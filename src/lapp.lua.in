@@ -60,6 +60,129 @@ do
 end
 
 --
+-- Arguments table
+--
+
+local arguments_table = {}
+
+arguments_table.none =
+  {
+    set = function(app, option, argument) return true end,
+    pending = function(app, option, list)
+      local callback = option.callback;
+      if(callback ~= nil) then
+        table.insert(list, {
+          callback = callback,
+          [1] = app,
+          [2] = option,
+        });
+      end
+    return true;
+    end,
+    get = function(app, option) return true end,
+    clean = function(app, option) end,
+    takes = false,
+  }
+
+arguments_table.flag =
+  {
+    set = function(app, option, argument)
+      option.flagged = true;
+      return true;
+    end,
+    pending = function(app, option, list) return true end,
+    get = function(app, option)
+      return option.flagged or false;
+    end,
+    clean = arguments_table.none.clean,
+    takes = false,
+  }
+
+arguments_table.string =
+  {
+    set = function(app, option, argument)
+      if(argument ~= nil) then
+        option.string = argument;
+        return true;
+      else
+        return false, 'Option ' .. option_name .. ' takes an argument';
+      end
+    end,
+    pending = function(app, option, list) end,
+    get = function(app, option)
+      return option.string, option.string and nil or (
+        [[%s: option '%s' requires an argument. Try '%s --help' for more information]]
+        ):format( app.arg_0,
+                  option.short or option.long,
+                  app.arg_0);
+    end,
+    clean = arguments_table.none.clean,
+    takes = true,
+  }
+
+arguments_table.file =
+  {
+    set = function(app, option, argument)
+      if(argument ~= nil) then
+        option.filename = argument;
+        return true;
+      else
+        return false, 'Option ' .. option_name .. ' takes an argument';
+      end
+    end,
+    pending = function(app, option, list)
+      if(option.filename == '-') then
+        option.fd = io.stdout;
+      else
+        table.insert(list, {
+          callback = function(filename, mode) option.fd, option.reason = io.open(filename, mode); end,
+          [1] = option.filename,
+          [2] = 'r',
+        });
+      end
+    end,
+    get = function(app, option)
+      if(option.fd ~= nil) then
+        return option.fd;
+      else
+        return false, option.reason or ('Can\'t open \'%s\''):format(option.filename);
+      end
+    end,
+    clean = function(app, option)
+      if(option.fd ~= nil) then
+        option.fd:close();
+      end
+    end,
+    takes = true,
+  }
+
+arguments_table['file-create'] =
+  {
+    set = function(app, option, argument)
+      if(argument ~= nil) then
+        option.filename = argument;
+        return true;
+      else
+        return false, 'Option ' .. option_name .. ' takes an argument';
+      end
+    end,
+    pending = function(app, option, list)
+      if(option.filename == '-') then
+        option.fd = io.stdin;
+      else
+        table.insert(list, {
+          callback = function(filename, mode) option.fd, option.reason = io.open(filename, mode); end,
+          [1] = option.filename,
+          [2] = 'w',
+        });
+      end
+    end,
+    get = arguments_table.file.get,
+    clean = arguments_table.file.clean,
+    takes = true,
+  }
+
+--
 -- Help handler
 --
 
@@ -80,19 +203,27 @@ local help_opt = {
         arguments_string = ' ' .. arguments_string;
       end
 
-      io.write(arguments_string);
+      io.stdout:write(arguments_string);
     end
 
-    io.write('\r\n');
+    io.stdout:write('\r\n');
 
     for _, option in ipairs(options) do
+      local arg_type = assert(arguments_table[option.argument], 'WTF?');
       io.stdout:write(text.padRight('', 10));
 
-      if(option.short) then
+      if(option.short ~= nil) then
         local names = table.concat({option.short, option.long}, ', ');
+        if(arg_type.takes == true and option.arg_description ~= nil) then
+          names = names .. ((option.long and '=' or ' ') .. option.arg_description);
+        end
         io.stdout:write(text.padRight(names, 20));
-      else
-        io.stdout:write(text.padRight(string.rep(' ', 4) .. option.long, 20));
+      elseif(option.long ~= nil) then
+        local names = string.rep(' ', 4) .. option.long;
+        if(arg_type.takes == true and option.arg_description ~= nil) then
+          names = names .. ('=' .. option.arg_description);
+        end
+        io.stdout:write(text.padRight(names, 20));
       end
 
       local description = option.description;
@@ -174,7 +305,7 @@ function lapp.add_option(app, short, long, description, argument_, arg_descripti
   checkArg(6, arg_description, 'string', 'nil');
 
   local callback = (type(argument_) == 'function') and argument_ or nil;
-  local argument = (type(argument_) == 'string') and argument or 'none';
+  local argument = (type(argument_) == 'string') and argument_ or 'none';
 
   assert(
       argument == 'none' or
@@ -242,91 +373,63 @@ local function search_option(options, option_name)
   end
 end
 
-local function check_arg(option, option_name, arg)
-  if(type(arg) ~= 'string') then
-    return false, 'Option ' .. option_name .. ' takes an argument';
-  elseif(option.argument == 'string') then
-    option.arg = arg;
-  elseif(option.argument == 'file') then
-    if(not require('filesystem').exists(arg)) then
-      return false, 'File ' .. arg .. ' doesn\'t exists';
-    end
-  elseif(option.argument == 'number') then
-    local number = tonumber(arg);
-    if(type(number) ~= 'number') then
-      return false, 'Option ' .. option_name .. 'takes a number argument';
-    else
-      option.arg = number;
-    end
-  end
-return true;
-end
-
 function lapp.run(app, ...)
   local files = {};
   local next_, cmd, key, option_name = ipairs({...});
-  app.arg_0 = cmd[0];
+  app.arg_0 = (args and args[0]) or (arg and arg[0]) or cmd[0];
 
   local pending_calls = {};
+  local noparse = false;
+
+--
+-- Parse command line
+--
 
   while(key) do
     key, option_name = next_(cmd, key);
     if(type(option_name) == 'string') then
-      if(option_name:match('^%-%-?.')) then
+      if(option_name == '--') then
+        noparse = true;
+      elseif(noparse == true) then
+        table.insert(files, option_name);
+      elseif(option_name:match('^%-%-?.')) then
 
         local function parse_option(option_name)
           local option_name_ = option_name:match('([^%=]*)');
           local option_arg_ = option_name:match('%=(.*)');
           local option = search_option(app.options, option_name_);
           if(option) then
-            local arg;
-            option.arg = nil;
+            local argument = nil;
+            local arg_type = assert(arguments_table[option.argument], 'WTF?');
 
-            if(option.argument ~= 'none') then
+          --
+          -- 'set' phase
+          --
+
+            if(arg_type.takes == true) then
               if(option_arg_ ~= nil) then
-                local success, reason = check_arg(option, option_name_, option_arg_);
-                if(not success) then
-                  return success, reason;
-                end
+                argument = option_arg_;
               else
-                key, arg = next_(cmd, key);
-                local success, reason = check_arg(option, option_name_, arg);
-                if(not success) then
-                  return success, reason;
-                end
+                key, argument = next_(cmd, key);
               end
-            else
-              if(option_arg_ ~= nil) then
-                return false, 'Option \'' .. option_name_ .. '\' doesn\'t take any arguments';
-              else
-                option.arg = true;
-              end
+            elseif(option_arg_ ~= nil) then
+              return false, 'Option \'' .. option_name_ .. '\' doesn\'t take any arguments';
             end
 
-            if(option.callback ~= nil) then
-              table.insert(
-                pending_calls,
-                {
-                  [0] = option.callback,
-                  [1] = app,
-                  [2] = args,
-                });
-            elseif(option.argument == 'file') then
-              table.insert(
-                pending_calls,
-                {
-                  [0] = io.open,
-                  [1] = option.arg,
-                  [2] = 'r',
-                });
-            elseif(option.argument == 'file-create') then
-              table.insert(
-                pending_calls,
-                {
-                  [0] = io.open,
-                  [1] = option.arg,
-                  [2] = 'w',
-                });
+            local success, reason =
+            arg_type.set(app, option, argument);
+            if(success == false) then
+              return success, reason;
+            end
+
+          --
+          -- 'pending' phase
+          --
+
+            local success, reason =
+            arg_type.pending(app, option, pending_calls);
+            if(success == false) then
+              return success, reason;
             end
           else
             return false, 'Unhandled option: ' .. option_name_;
@@ -334,8 +437,7 @@ function lapp.run(app, ...)
         return true;
         end
 
-        local islong = (option_name:sub(2, 2) == '-');
-        if(islong) then
+        if(option_name:sub(2, 2) == '-') then
           local ret, reason = parse_option(option_name);
           if(ret ~= true) then
             return ret, reason;
@@ -355,11 +457,30 @@ function lapp.run(app, ...)
     end
   end
 
+--
+-- Execute pending callbacks
+--
+
   for _, pending in ipairs(pending_calls) do
-    local func = pending[0];
+    local func = pending.callback;
     func(table.unpack(pending, 1));
   end
-return true, app.main(app, files);
+
+--
+-- Execute main
+--
+
+  local result = {app.main(app, files)};
+
+--
+-- 'cleanup' phase
+--
+
+  for _, option in ipairs(app.options) do
+    local arg_type = assert(arguments_table[option.argument], 'WTF?');
+    arg_type.clean(app, option);
+  end
+return table.unpack(result);
 end
 
 function lapp.run_s(app, ...)
@@ -371,35 +492,41 @@ function lapp.run_s(app, ...)
   end
 end
 
-function lapp.getopt(app, option_name_)
+local function getopt_(app, option_name_)
   if(option_name_:match('^%-%-?.')) then
     local option = search_option(app.options, option_name_);
     if(option) then
-      return option.arg;
+      local arg_type = assert(arguments_table[option.argument], 'WTF?');
+      local success, reason
+      return arg_type.get(app, option);
     end
   else
     local option_names = {'-' .. option_name_, '--' .. option_name_};
     for _, option_name in ipairs(option_names) do
       local option = search_option(app.options, option_name);
       if(option) then
-        return option.arg;
+        local arg_type = assert(arguments_table[option.argument], 'WTF?');
+        return arg_type.get(app, option);
       end
     end
   end
 end
 
-function lapp.assertopt(app, option_name_)
-  local value = lapp.getopt(app, option_name_);
-  if(not value) then
-    error(
-    string.format('%s: option \'%s\' requires an argument\r\n' ..
-                  'Try \'%s --help\' for more information\r\n',
-                  app.name,
-                  option_name_,
-                  app.name
-                  ), 1);
+function lapp.getopt(app, option_name_)
+  local value, reason =
+  getopt_(app, option_name_);
+  if(value ~= false) then
+    return value;
   end
-return value;
+end
+
+function lapp.assertopt(app, option_name_)
+  local value, reason =
+  getopt_(app, option_name_);
+  if(value ~= false) then
+    return value;
+  end
+error(reason, 1);
 end
 
 function lapp.assertarg(app, arg)
@@ -407,8 +534,8 @@ function lapp.assertarg(app, arg)
     error(
     string.format('%s: requires and argument\r\n' ..
                   'Try \'%s --help\' for more information\r\n',
-                  app.name,
-                  app.name
+                  app.arg_0,
+                  app.arg_0
                   ), 1);
   end
 return arg;
@@ -419,7 +546,7 @@ function lapp.assert(app, condition, message)
   if(condition ~= true) then
     error(
       string.format('%s: fatal error: %s',
-        app.name, tostring(message)), 2);
+        app.arg_0, tostring(message)), 1);
   end
 end
 
