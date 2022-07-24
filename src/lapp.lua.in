@@ -15,51 +15,84 @@
 --  You should have received a copy of the GNU General Public License
 --  along with libLApp.  If not, see <http://www.gnu.org/licenses/>.
 ]]
-
 local lapp = {};
 lapp.version = "libLApp @PACKAGE_VERSION@";
 
-local function check(have, want, ...)
-  if not want then
-    return false
+--
+-- Bootstrap
+--
+
+local text;
+do
+  if(type(checkArg) ~= 'function') then
+    local function check(have, want, ...)
+      if not want then
+        return false
+      else
+        return have == want or check(have, ...)
+      end
+    end
+
+    function checkArg(n, have, ...)
+      have = type(have)
+      if not check(have, ...) then
+        local msg = string.format("bad argument #%d (%s expected, got %s)", n, table.concat({...}, " or "), have)
+        error(msg, 3)
+      end
+    end
+  end
+
+  local success, text_ = pcall(require, 'text');
+  if(success == true) then
+    text = text_;
   else
-    return have == want or check(have, ...)
+    text = {
+      padRight = function(value, spaces)
+        return value .. string.rep(' ', spaces - value:len());
+      end,
+    };
   end
 end
 
-local function checkArg(n, have, ...)
-  have = type(have)
-  if not check(have, ...) then
-    local msg = string.format("bad argument #%d (%s expected, got %s)", n, table.concat({...}, " or "), have)
-    error(msg, 3)
-  end
-end
-
-local function padRight(value, spaces)
-return value .. string.rep(' ', spaces - value:len());
-end
+--
+-- Help handler
+--
 
 local help_opt = {
   short = '-h',
   long = '--help',
   type = 'none',
   callback = function(app)
+    local arguments = app.arguments;
     local options = app.options;
 
-    io.stdout:write(string.format('%s\r\nOptions:\r\n', app.arg_0 or app.name));
+    io.stdout:write(string.format('%s\r\nOptions:', app.arg_0 or app.name));
+    for _, argument in ipairs(arguments) do
+      local arguments_string = argument.name;
+      if(argument.optional) then
+        arguments_string = string.format(' [%s]', arguments_string);
+      else
+        arguments_string = ' ' .. arguments_string;
+      end
+
+      io.write(arguments_string);
+    end
+
+    io.write('\r\n');
+
     for _, option in ipairs(options) do
-      io.stdout:write(padRight('', 10));
+      io.stdout:write(text.padRight('', 10));
 
       if(option.short) then
         local names = table.concat({option.short, option.long}, ', ');
-        io.stdout:write(padRight(names, 20));
+        io.stdout:write(text.padRight(names, 20));
       else
-        io.stdout:write(padRight(string.rep(' ', 4) .. option.long, 20));
+        io.stdout:write(text.padRight(string.rep(' ', 4) .. option.long, 20));
       end
 
       local description = option.description;
       if(description) then
-        io.stdout:write(padRight(description, 20))
+        io.stdout:write(text.padRight(description, 20))
       end
 
         io.stdout:write('\n');
@@ -76,14 +109,19 @@ local help_opt = {
   end,
 };
 
+--
+-- Library functions
+--
+
 function lapp.new(name, main_)
   return setmetatable({
-    name = name,
+    arguments = {},
     main = main_,
-    notes = {},
+    name = name,
     options = {
       [1] = help_opt,
     },
+    notes = {},
   }, {
     __name = 'application';
     __tostring = function()
@@ -91,6 +129,35 @@ function lapp.new(name, main_)
     end,
     __index = lapp;
   });
+end
+
+function lapp.add_argument(app, name, optional)
+  assert(tostring(app) == 'application', 'Invalid application');
+  checkArg(2, name, 'string');
+  checkArg(3, optional, 'boolean', 'nil');
+
+  local argument = {
+    name = name,
+    optional = (optional == true),
+  };
+
+  table.insert(app.arguments, argument);
+return true;
+end
+
+function lapp.add_arguments(app, arguments)
+  assert(tostring(app) == 'application', 'Invalid application');
+  checkArg(2, arguments, 'table');
+
+  local add_argument = lapp.add_argument;
+  for _, argument in ipairs(arguments) do
+    assert(type(argument) == 'table');
+    local success = add_argument(app, table.unpack(option));
+    if(not success) then
+      return success;
+    end
+  end
+return true;
 end
 
 function lapp.add_option(app, short, long, description, type_, callback)
@@ -105,6 +172,7 @@ function lapp.add_option(app, short, long, description, type_, callback)
   assert(
       type_ == 'none' or
       type_ == 'string' or
+      type_ == 'number' or
       type_ == 'file' or
       type_ == 'file-create'
     , 'Invalid option type');
@@ -125,13 +193,15 @@ function lapp.add_options(app, options)
   assert(tostring(app) == 'application', 'Invalid application');
   checkArg(2, options, 'table');
 
+  local add_option = lapp.add_option;
   for _, option in ipairs(options) do
     assert(type(option) == 'table');
-    local success = lapp.add_option(app, table.unpack(option));
+    local success = add_option(app, table.unpack(option));
     if(not success) then
       return success;
     end
   end
+return true;
 end
 
 function lapp.add_note(app, note)
@@ -166,10 +236,16 @@ end
 local function check_arg(option, option_name, arg)
   if(type(arg) ~= 'string') then
     return false, 'Option ' .. option_name .. ' takes an argument';
-  end
-  if(option.type == 'file') then
+  elseif(option.type == 'file') then
     if(not require('filesystem').exists(arg)) then
       return false, 'File ' .. arg .. ' doesn\'t exists';
+    end
+  elseif(option.type == 'number') then
+    local number = tonumber(arg);
+    if(type(number) ~= 'number') then
+      return false, 'Option ' .. option_name .. 'takes a number argument';
+    else
+      option.arg = number;
     end
   end
 return true;
@@ -191,6 +267,8 @@ function lapp.run(app, ...)
           local option = search_option(app.options, option_name);
           if(option) then
             local arg = true;
+            option.arg = nil;
+
             if(option.type ~= 'none') then
               key, arg = next_(cmd, key);
               local success, reason = check_arg(option, option_name, arg);
@@ -198,14 +276,18 @@ function lapp.run(app, ...)
                 return success, reason;
               end
             end
+
             if(option.callback) then
               table.insert(pending_calls, {
-                func = option.callback,
+                [0] = option.callback,
                 [1] = app,
                 [2] = args,
               });
             end
-            option.arg = arg;
+
+            if(option.arg == nil) then
+              option.arg = arg;
+            end
           else
             return false, 'Unhandled option: ' .. option_name;
           end
@@ -234,8 +316,8 @@ function lapp.run(app, ...)
   end
 
   for _, pending in ipairs(pending_calls) do
-    local func = pending.func;
-    pending.func = nil;
+    local func = pending[0];
+    pending[0] = nil;
 
     func(table.unpack(pending));
   end
@@ -303,4 +385,7 @@ function lapp.assert(app, condition, message)
   end
 end
 
+--
+-- Library
+--
 return lapp;
