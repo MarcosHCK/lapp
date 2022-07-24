@@ -66,7 +66,7 @@ end
 local help_opt = {
   short = '-h',
   long = '--help',
-  type = 'none',
+  argument = 'none',
   callback = function(app)
     local arguments = app.arguments;
     local options = app.options;
@@ -165,29 +165,33 @@ function lapp.add_arguments(app, arguments)
 return true;
 end
 
-function lapp.add_option(app, short, long, description, type_, callback)
+function lapp.add_option(app, short, long, description, argument_, arg_description)
   assert(tostring(app) == 'application', 'Invalid application');
   checkArg(2, short, 'string', long ~= nil and 'nil');
   checkArg(3, long, 'string', short ~= nil and 'nil');
   checkArg(4, description, 'string', 'nil');
-  checkArg(5, type_, 'string', 'nil');
-  checkArg(6, callback, 'function', 'nil');
+  checkArg(5, argument_, 'string', 'function', 'nil');
+  checkArg(6, arg_description, 'string', 'nil');
 
-  type_ = type_ or 'none';
+  local callback = (type(argument_) == 'function') and argument_ or nil;
+  local argument = (type(argument_) == 'string') and argument or 'none';
+
   assert(
-      type_ == 'none' or
-      type_ == 'string' or
-      type_ == 'number' or
-      type_ == 'file' or
-      type_ == 'file-create'
+      argument == 'none' or
+      argument == 'string' or
+      argument == 'number' or
+      argument == 'file' or
+      argument == 'file-create'
     , 'Invalid option type');
 
-  local option = {
+  local option =
+  {
     short = short and ('-' .. short),
     long = long and ('--' .. long),
-    type = type_,
-    callback = callback,
     description = description,
+    argument = argument,
+    arg_description = arg_description,
+    callback = callback,
   };
 
   table.insert(app.options, option);
@@ -241,13 +245,13 @@ end
 local function check_arg(option, option_name, arg)
   if(type(arg) ~= 'string') then
     return false, 'Option ' .. option_name .. ' takes an argument';
-  elseif(option.type == 'string') then
+  elseif(option.argument == 'string') then
     option.arg = arg;
-  elseif(option.type == 'file') then
+  elseif(option.argument == 'file') then
     if(not require('filesystem').exists(arg)) then
       return false, 'File ' .. arg .. ' doesn\'t exists';
     end
-  elseif(option.type == 'number') then
+  elseif(option.argument == 'number') then
     local number = tonumber(arg);
     if(type(number) ~= 'number') then
       return false, 'Option ' .. option_name .. 'takes a number argument';
@@ -278,7 +282,7 @@ function lapp.run(app, ...)
             local arg;
             option.arg = nil;
 
-            if(option.type ~= 'none') then
+            if(option.argument ~= 'none') then
               if(option_arg_ ~= nil) then
                 local success, reason = check_arg(option, option_name_, option_arg_);
                 if(not success) then
@@ -299,12 +303,30 @@ function lapp.run(app, ...)
               end
             end
 
-            if(option.callback) then
-              table.insert(pending_calls, {
-                [0] = option.callback,
-                [1] = app,
-                [2] = args,
-              });
+            if(option.callback ~= nil) then
+              table.insert(
+                pending_calls,
+                {
+                  [0] = option.callback,
+                  [1] = app,
+                  [2] = args,
+                });
+            elseif(option.argument == 'file') then
+              table.insert(
+                pending_calls,
+                {
+                  [0] = io.open,
+                  [1] = option.arg,
+                  [2] = 'r',
+                });
+            elseif(option.argument == 'file-create') then
+              table.insert(
+                pending_calls,
+                {
+                  [0] = io.open,
+                  [1] = option.arg,
+                  [2] = 'w',
+                });
             end
           else
             return false, 'Unhandled option: ' .. option_name_;
@@ -335,9 +357,7 @@ function lapp.run(app, ...)
 
   for _, pending in ipairs(pending_calls) do
     local func = pending[0];
-    pending[0] = nil;
-
-    func(table.unpack(pending));
+    func(table.unpack(pending, 1));
   end
 return true, app.main(app, files);
 end
