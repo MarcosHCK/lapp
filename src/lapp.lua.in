@@ -19,55 +19,77 @@
 local lapp = {};
 lapp.version = "libLApp @PACKAGE_VERSION@";
 
+local function check(have, want, ...)
+  if not want then
+    return false
+  else
+    return have == want or check(have, ...)
+  end
+end
+
+local function checkArg(n, have, ...)
+  have = type(have)
+  if not check(have, ...) then
+    local msg = string.format("bad argument #%d (%s expected, got %s)", n, table.concat({...}, " or "), have)
+    error(msg, 3)
+  end
+end
+
+local function padRight(value, spaces)
+return value .. string.rep(' ', spaces - value:len());
+end
+
+local help_opt = {
+  short = '-h',
+  long = '--help',
+  type = 'none',
+  callback = function(app)
+    local options = app.options;
+
+    io.stdout:write(string.format('%s\r\nOptions:\r\n', app.arg_0 or app.name));
+    for _, option in ipairs(options) do
+      io.stdout:write(padRight('', 10));
+
+      if(option.short) then
+        local names = table.concat({option.short, option.long}, ', ');
+        io.stdout:write(padRight(names, 20));
+      else
+        io.stdout:write(padRight(string.rep(' ', 4) .. option.long, 20));
+      end
+
+      local description = option.description;
+      if(description) then
+        io.stdout:write(padRight(description, 20))
+      end
+
+        io.stdout:write('\n');
+    end
+
+    if(#app.notes > 0) then
+      io.stdout:write('Note' .. (#app.notes > 1 and 's' or '') .. ':\r\n');
+      for _, note in ipairs(app.notes) do
+        io.stdout:write('- ' .. note .. '\r\n');
+      end
+    end
+
+    os.exit(0);
+  end,
+};
+
 function lapp.new(name, main_)
   return setmetatable({
     name = name,
     main = main_,
     notes = {},
     options = {
-      [1] = {
-        short = '-h',
-        long = '--help',
-        type = 'none',
-        callback = function(app)
-          local options = app.options;
-          local text = require('text');
-
-          io.stdout:write(string.format('%s\r\nOptions:\r\n', app.arg_0 or app.name));
-          for _, option in ipairs(options) do
-            io.stdout:write(text.padRight('', 10));
-
-            if(option.short) then
-              local names = table.concat({option.short, option.long}, ', ');
-              io.stdout:write(text.padRight(names, 20));
-            else
-              io.stdout:write(text.padRight(string.rep(' ', 4) .. option.long, 20));
-            end
-
-            local description = option.description;
-            if(description) then
-              io.stdout:write(text.padRight(description, 20))
-            end
-
-            io.stdout:write('\n');
-          end
-
-          if(#app.notes > 0) then
-            io.stdout:write('Note' .. (#app.notes > 1 and 's' or '') .. ':\r\n');
-            for _, note in ipairs(app.notes) do
-              io.stdout:write('- ' .. note .. '\r\n');
-            end
-          end
-
-          os.exit(0);
-        end,
-      },
+      [1] = help_opt,
     },
   }, {
-    __type = 'application';
+    __name = 'application';
     __tostring = function()
       return 'application';
-    end
+    end,
+    __index = lapp;
   });
 end
 
@@ -158,10 +180,12 @@ function lapp.run(app, ...)
   local next_, cmd, key, option_name = ipairs({...});
   app.arg_0 = cmd[0];
 
+  local pending_calls = {};
+
   while(key) do
     key, option_name = next_(cmd, key);
     if(type(option_name) == 'string') then
-      if(option_name:match('^%-')) then
+      if(option_name:match('^%-%-?.')) then
         local option = search_option(app.options, option_name);
         if(option) then
           local arg = true;
@@ -173,7 +197,11 @@ function lapp.run(app, ...)
             end
           end
           if(option.callback) then
-            option.callback(app, arg);
+            table.insert(pending_calls, {
+              func = option.callback,
+              [1] = app,
+              [2] = args,
+            });
           end
           option.arg = arg;
         else
@@ -183,6 +211,13 @@ function lapp.run(app, ...)
         table.insert(files, option_name);
       end
     end
+  end
+
+  for _, pending in ipairs(pending_calls) do
+    local func = pending.func;
+    pending.func = nil;
+
+    func(table.unpack(pending));
   end
 return true, app.main(app, files);
 end
@@ -197,12 +232,47 @@ function lapp.run_s(app, ...)
 end
 
 function lapp.getopt(app, option_name_)
-  local option_names = {'-' .. option_name_,'--' .. option_name_};
+  local option_names = {'-' .. option_name_, '--' .. option_name_};
   for _, option_name in ipairs(option_names) do
     local option = search_option(app.options, option_name);
     if(option) then
       return option.arg;
     end
+  end
+end
+
+function lapp.assertopt(app, option_name_)
+  local value = lapp.getopt(app, option_name_);
+  if(not value) then
+    error(
+    string.format('%s: option \'%s\' requires an argument\r\n' ..
+                  'Try \'%s --help\' for more information\r\n',
+                  app.name,
+                  option_name_,
+                  app.name
+                  ));
+  end
+return value;
+end
+
+function lapp.assertarg(app, arg)
+  if(not arg) then
+    error(
+    string.format('%s: requires and argument\r\n' ..
+                  'Try \'%s --help\' for more information\r\n',
+                  app.name,
+                  app.name
+                  ));
+  end
+return arg;
+end
+
+function lapp.assert(app, condition, message)
+  assert(tostring(app) == 'application', 'Invalid application');
+  if(condition ~= true) then
+    error(
+      string.format('%s: fatal error: %s',
+        app.name, tostring(message)));
   end
 end
 
