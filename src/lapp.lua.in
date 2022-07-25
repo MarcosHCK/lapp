@@ -306,14 +306,7 @@ function lapp.add_option(app, short, long, description, argument_, arg_descripti
 
   local callback = (type(argument_) == 'function') and argument_ or nil;
   local argument = (type(argument_) == 'string') and argument_ or 'none';
-
-  assert(
-      argument == 'none' or
-      argument == 'string' or
-      argument == 'number' or
-      argument == 'file' or
-      argument == 'file-create'
-    , 'Invalid option type');
+  assert(arguments_table [argument] ~= nil, 'Invalid option type');
 
   local option =
   {
