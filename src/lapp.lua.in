@@ -305,7 +305,7 @@ function lapp.add_option(app, short, long, description, argument_, arg_descripti
   checkArg(6, arg_description, 'string', 'nil');
 
   local callback = (type(argument_) == 'function') and argument_ or nil;
-  local argument = (type(argument_) == 'string') and argument_ or 'none';
+  local argument = (type(argument_) == 'string') and argument_ or 'flag';
   assert(arguments_table [argument] ~= nil, 'Invalid option type');
 
   local option =
